@@ -46,8 +46,10 @@ export default Runtime.handler(Commands, (input) =>
         Effect.promise(() => preflight.fail("OpenCode update could not start the new background service")),
       ),
     )
-    const updater = yield* Updater.Service
-    yield* updater.check().pipe(Effect.forkScoped)
+    if (!server.service) {
+      const updater = yield* Updater.Service
+      yield* updater.check().pipe(Effect.forkScoped)
+    }
     preflight.loading()
     const config = yield* Config.Service
     const npm = yield* Npm.Service
