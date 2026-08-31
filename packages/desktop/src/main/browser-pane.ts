@@ -1,85 +1,119 @@
 import type { BrowserPaneCommand, BrowserPaneLayout, BrowserPaneTarget } from "@opencode-ai/app/desktop"
-import type { BrowserDriver, BrowserRegistration } from "@opencode-ai/client/node"
+import { BrowserControlProtocol } from "@opencode-ai/protocol/browser-control"
+import { Browser } from "@opencode-ai/schema/browser"
+import type { BrowserControl } from "@opencode-ai/schema/browser-control"
+import { SessionID } from "@opencode-ai/schema/session-id"
 import type { BrowserWindow } from "electron"
+import { Effect, Schema } from "effect"
+import WebSocket from "ws"
 import { BrowserPaneEvent } from "../shared/ipc-rpc/events"
 import { createBrowserPage, destinationOrigin, initialBrowserState, type BrowserPage } from "./browser-chromium"
 import { emitIpcEvent } from "./ipc-events"
 
 type Entry = {
-  readonly bindingID: string
-  readonly win: BrowserWindow
-  readonly chromium: typeof BrowserDriver.chromium
+  bindingID: string
+  win: BrowserWindow
+  socket: WebSocket
+  registered: PromiseWithResolvers<void>
+  requests: Map<BrowserControl.RequestID, AbortController>
   cleanup?: () => void
-  registration?: BrowserRegistration
-  ready?: Promise<BrowserRegistration>
   page?: BrowserPage
-  layout?: BrowserPaneLayout
+  attached: boolean
 }
 
 export function createBrowserPane() {
   const entries = new Map<string, Entry>()
   let disposed = false
-
   return {
     async register(win: BrowserWindow, bindingID: string, target: BrowserPaneTarget) {
       if (disposed || !destinationOrigin(target.endpoint.url)) throw new Error("browser.pane.registration.invalid")
       if (target.endpoint.username && !target.endpoint.password) throw new Error("browser.pane.endpoint.invalid")
-      const { BrowserDriver, OpenCode } = await import("@opencode-ai/client/node")
       if (entries.has(bindingID)) throw new Error("browser.pane.owner.invalid")
       if (win.isDestroyed() || win.webContents.isDestroyed()) throw new Error("browser.pane.owner.unavailable")
-      const credentials = `${target.endpoint.username ?? "opencode"}:${target.endpoint.password}`
-      const client = OpenCode.make({
-        baseUrl: target.endpoint.url,
+      const sessionID = SessionID.make(target.sessionID)
+      const url = new URL(BrowserControlProtocol.Path, target.endpoint.url)
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+      const socket = new WebSocket(url, BrowserControlProtocol.Subprotocol, {
         headers: target.endpoint.password
-          ? { Authorization: `Basic ${Buffer.from(credentials).toString("base64")}` }
-          : undefined,
+          ? {
+              Authorization: `Basic ${Buffer.from(`${target.endpoint.username ?? "opencode"}:${target.endpoint.password}`).toString("base64")}`,
+            }
+          : {},
+        handshakeTimeout: 10_000,
+        maxPayload: BrowserControlProtocol.MaxMessageBytes,
+        perMessageDeflate: false,
       })
-      const entry: Entry = { bindingID, win, chromium: BrowserDriver.chromium }
-      const stop = () => void close(entry).catch(() => undefined)
+      const entry: Entry = {
+        bindingID,
+        win,
+        socket,
+        attached: false,
+        registered: Promise.withResolvers(),
+        requests: new Map(),
+      }
+      const stop = () => close(entry)
+      socket.on("error", stop)
+      socket.on("close", stop)
+      socket.once("open", () => send(entry, { type: "browser.control.register", sessionID }))
+      socket.on("message", async (data, binary) => {
+        try {
+          if (binary) return stop()
+          const message = Effect.runSync(BrowserControlProtocol.decodeFromServer(data.toString()))
+          if (message.type === "browser.control.registered") return entry.registered.resolve()
+          if (message.type === "browser.control.open") return publish(entry, { type: "open" })
+          if (message.type === "browser.control.cancel") return entry.requests.get(message.requestID)?.abort()
+          const abort = new AbortController()
+          entry.requests.set(message.requestID, abort)
+          const outcome: Browser.Outcome = await Promise.resolve()
+            .then(() => {
+              if (!entry.attached || !entry.page) throw new Error("not_attached")
+              return entry.page.execute(message.command, abort.signal)
+            })
+            .then(
+              (result) => ({ type: "success" as const, result }),
+              (error: unknown) => {
+                const code = abort.signal.aborted
+                  ? "aborted"
+                  : error instanceof Error && Schema.is(Browser.ErrorCode)(error.message)
+                    ? error.message
+                    : "internal"
+                return { type: "failure" as const, code, message: code }
+              },
+            )
+          entry.requests.delete(message.requestID)
+          send(entry, { type: "browser.control.response", requestID: message.requestID, outcome })
+        } catch {
+          stop()
+        }
+      })
       const navigate = (event: Electron.Event<{ isMainFrame: boolean; isSameDocument: boolean }>) => {
         if (event.isMainFrame && !event.isSameDocument) stop()
       }
-      const contents = win.webContents
-      contents.once("destroyed", stop)
-      contents.on("did-start-navigation", navigate)
+      win.webContents.once("destroyed", stop)
+      win.webContents.on("did-start-navigation", navigate)
       entry.cleanup = () => {
-        contents.off("destroyed", stop)
-        contents.off("did-start-navigation", navigate)
+        win.webContents.off("destroyed", stop)
+        win.webContents.off("did-start-navigation", navigate)
       }
       entries.set(bindingID, entry)
-      entry.ready = client.browser.register({
-        sessionID: target.sessionID,
-        open: () => publish(entry, { type: "open" }),
-      })
-      entry.registration = await entry.ready.catch(async (error: unknown) => {
-        await close(entry)
-        throw error
-      })
-      if (entries.get(bindingID) !== entry || disposed) {
-        await close(entry)
-        throw new Error("browser.pane.registration.closed")
-      }
+      await entry.registered.promise
+      if (entries.get(bindingID) !== entry) throw new Error("browser.pane.registration.closed")
       publish(entry, { type: "state", state: { ...initialBrowserState } })
     },
     layout(win: BrowserWindow, bindingID: string, value?: BrowserPaneLayout) {
-      const entry = owned(win, bindingID)
-      entry.layout = value
-      update(entry)
+      update(owned(win, bindingID), value)
     },
     async command(win: BrowserWindow, bindingID: string, command: BrowserPaneCommand) {
       const entry = owned(win, bindingID)
-      const page = entry.page
-      if (!page?.ready) throw new Error("browser.pane.attachment.unavailable")
-      const controller = (await page.ready).resource
-      if (entry.page !== page || page.closed) throw new Error("browser.pane.attachment.closed")
-      if (command.type === "navigate") return controller.navigate(command.url)
-      if (command.type === "stop") return controller.stop()
-      return controller[command.type]()
+      if (!entry.attached || !entry.page) throw new Error("browser.pane.attachment.unavailable")
+      await entry.page.command(command)
     },
-    close: (win: BrowserWindow, bindingID: string) => close(owned(win, bindingID)),
+    async close(win: BrowserWindow, bindingID: string) {
+      close(owned(win, bindingID))
+    },
     async dispose() {
       disposed = true
-      await Promise.all([...entries.values()].map(close))
+      entries.forEach(close)
     },
   }
 
@@ -94,48 +128,58 @@ export function createBrowserPane() {
     emitIpcEvent(entry.win.webContents, new BrowserPaneEvent({ bindingID: entry.bindingID, event }))
   }
 
-  async function close(entry: Entry) {
+  function close(entry: Entry) {
     if (entries.get(entry.bindingID) !== entry) return
+    publish(entry, { type: "state", state: { ...initialBrowserState, error: "browser.pane.registration.closed" } })
     entries.delete(entry.bindingID)
-    entry.page?.dispose()
+    entry.registered.reject(new Error("browser.pane.registration.closed"))
     entry.cleanup?.()
-    await entry.ready?.then((registration) => registration.close()).catch(() => undefined)
+    detach(entry)
+    entry.socket.terminate()
   }
 
-  function update(entry: Entry) {
-    if (!entry.layout) {
-      entry.page?.dispose()
-      entry.page = undefined
-      return
-    }
-    const bounds = entry.layout.visible ? entry.layout.bounds : undefined
-    if (!bounds || bounds.width <= 0 || bounds.height <= 0 || entry.win.isDestroyed()) {
-      return entry.page?.view.setVisible(false)
-    }
-    if (!entry.page && entry.registration) {
-      const fail = (error: unknown) => {
-        if (entry.page !== page || page.closed) return
-        const failure = error instanceof Error ? error.message : String(error)
-        page.dispose()
-        publish(entry, { type: "state", state: { ...initialBrowserState, error: failure } })
+  function detach(entry: Entry) {
+    if (entry.attached) send(entry, { type: "browser.control.detach" })
+    entry.attached = false
+    entry.requests.forEach((request) => request.abort())
+    entry.requests.clear()
+    entry.page?.dispose()
+    entry.page = undefined
+  }
+
+  function update(entry: Entry, layout?: BrowserPaneLayout) {
+    const bounds = layout?.visible ? layout.bounds : undefined
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0 || entry.win.isDestroyed()) return detach(entry)
+    if (!entry.page) {
+      const fail = () => {
+        if (entry.page !== page) return
+        detach(entry)
+        publish(entry, { type: "state", state: { ...initialBrowserState, error: "page_crashed" } })
       }
-      const page = createBrowserPage(entry.win, (state) => publish(entry, { type: "state", state }), fail)
+      const page = createBrowserPage(
+        entry.win,
+        (state, error) => {
+          if (entry.page !== page || !entry.attached) return
+          send(entry, { type: "browser.control.state", state })
+          publish(entry, { type: "state", state: { ...state, ready: true, error } })
+        },
+        fail,
+      )
       entry.page = page
-      page.ready = entry.registration
-        .attach({ driver: entry.chromium(page.port), signal: page.abort.signal })
-        .then(async (attachment) => {
-          if (page.closed || entry.page !== page) {
-            await attachment.close()
-            throw new Error("browser.pane.attachment.closed")
-          }
-          page.attachment = attachment
-          page.publish({ ...page.state, ready: true })
-          return attachment
+      void page.ready
+        .then(() => {
+          if (entry.page !== page) return
+          entry.attached = true
+          send(entry, { type: "browser.control.attach", state: page.state() })
+          publish(entry, { type: "state", state: { ...page.state(), ready: true } })
         })
-      void page.ready.catch(fail)
+        .catch(fail)
     }
-    if (!entry.page || entry.page.closed) return
-    entry.page.view.setBounds(bounds)
-    entry.page.view.setVisible(true)
+    entry.page?.view.setBounds(bounds)
+    entry.page?.view.setVisible(true)
+  }
+
+  function send(entry: Entry, message: BrowserControl.FromClient) {
+    if (entry.socket.readyState === WebSocket.OPEN) entry.socket.send(BrowserControlProtocol.encodeFromClient(message))
   }
 }

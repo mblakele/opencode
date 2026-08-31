@@ -1,19 +1,15 @@
-import type { BrowserPaneState } from "@opencode-ai/app/desktop"
-import type { BrowserDriverContext, BrowserProxy, ChromiumController, ChromiumPort } from "@opencode-ai/client/node"
-import electron, { type BrowserWindow, type WebContentsView } from "electron"
+import type { BrowserPaneCommand, BrowserPaneState } from "@opencode-ai/app/desktop"
+import type { Browser } from "@opencode-ai/schema/browser"
+import electron, { type BrowserWindow } from "electron"
 
-export type BrowserPage = {
-  readonly view: WebContentsView
-  readonly abort: AbortController
-  readonly listeners: Set<(event: { readonly state: BrowserPaneState; readonly mainDocumentChanged: boolean }) => void>
-  readonly port: (context: BrowserDriverContext) => Promise<ChromiumPort<BrowserPage>>
-  readonly publish: (state: BrowserPaneState, changed?: boolean) => void
-  readonly dispose: () => void
-  approvedOrigin: string
-  state: BrowserPaneState
-  closed: boolean
-  attachment?: { close(): Promise<void> }
-  ready?: Promise<{ resource: ChromiumController<BrowserPage>; close(): Promise<void> }>
+type AXNode = {
+  nodeId: string
+  backendDOMNodeId?: number
+  childIds?: string[]
+  ignored?: boolean
+  role?: { value?: string }
+  name?: { value?: unknown }
+  properties?: Array<{ name: string; value?: { value?: unknown } }>
 }
 
 export const initialBrowserState: BrowserPaneState = {
@@ -24,11 +20,12 @@ export const initialBrowserState: BrowserPaneState = {
   canGoForward: false,
   ready: false,
 }
+export type BrowserPage = ReturnType<typeof createBrowserPage>
 
 export function createBrowserPage(
   win: BrowserWindow,
-  publish: (state: BrowserPaneState) => void,
-  fail: (error: unknown) => void,
+  publish: (state: Browser.State, error?: string) => void,
+  fail: () => void,
 ) {
   const view = new electron.WebContentsView({
     webPreferences: {
@@ -43,114 +40,21 @@ export function createBrowserPage(
     },
   })
   const contents = view.webContents
-  const page: BrowserPage = {
-    view,
-    abort: new AbortController(),
-    listeners: new Set(),
-    approvedOrigin: "about:blank",
-    state: { ...initialBrowserState },
-    closed: false,
-    publish(state, changed = false) {
-      if (page.closed) return
-      page.state = state
-      page.listeners.forEach((listener) => listener({ state, mainDocumentChanged: changed }))
-      publish(state)
-    },
-    async port(context) {
-      const dispose = await installBrowserNetwork(contents, context.proxy)
-      await contents
-        .loadURL("about:blank")
-        .then(() => context.signal.throwIfAborted())
-        .catch((error: unknown) => {
-          dispose()
-          throw error
-        })
-      return {
-        resource: page,
-        state: () => readBrowserState(page),
-        subscribe(listener) {
-          page.listeners.add(listener)
-          return () => page.listeners.delete(listener)
-        },
-        navigate(url) {
-          const origin = url === "about:blank" ? url : destinationOrigin(url)
-          if (!origin) throw new Error("browser.pane.destination.invalid")
-          page.approvedOrigin = origin
-          return contents.loadURL(url)
-        },
-        back: () => navigateHistory(page, -1),
-        forward: () => navigateHistory(page, 1),
-        reload: () => contents.reload(),
-        stop: () => (contents.isDestroyed() ? undefined : contents.stop()),
-        send(command) {
-          if (page.closed || contents.isDestroyed()) throw new Error("browser.pane.attachment.closed")
-          if (!contents.debugger.isAttached()) contents.debugger.attach("1.3")
-          return contents.debugger.sendCommand(command.method, command.params)
-        },
-        viewport: () => view.getBounds(),
-        async screenshot(maximum) {
-          const source = await contents.capturePage()
-          const size = source.getSize()
-          const scale = Math.min(1, Math.floor(maximum) / Math.max(size.width, size.height))
-          const image = source.resize({
-            width: Math.max(1, Math.round(size.width * scale)),
-            height: Math.max(1, Math.round(size.height * scale)),
-          })
-          return { data: new Uint8Array(image.toPNG()), ...image.getSize() }
-        },
-        dispose,
-      }
-    },
-    dispose() {
-      if (page.closed) return
-      page.closed = true
-      page.abort.abort()
-      if (!win.isDestroyed()) win.contentView.removeChildView(view)
-      if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false })
-      void page.attachment?.close().catch(() => undefined)
-    },
-  }
-  view.setVisible(false)
-  view.setBorderRadius(8)
-  const blocked = () => page.publish({ ...readBrowserState(page), loading: false, error: "ERR_BLOCKED_BY_CLIENT" })
-  secureBrowserPage(contents, () => page.approvedOrigin, blocked)
-  const update = () => page.publish(readBrowserState(page))
-  contents.on("did-stop-loading", update)
-  contents.on("did-navigate-in-page", update)
-  contents.on("page-title-updated", update)
-  contents.on("did-fail-load", (_event, code, error, url, mainFrame) => {
-    if (mainFrame && code !== -3) page.publish({ ...readBrowserState(page), url, loading: false, error })
-  })
-  contents.on("did-start-navigation", (event) => {
-    if (!event.isMainFrame) return
-    page.publish({ ...readBrowserState(page), url: event.url, loading: true, error: undefined }, !event.isSameDocument)
-  })
-  contents.on("render-process-gone", (_event, details) => fail(details.reason))
-  contents.debugger.on("detach", (_event, reason) => fail(reason))
-  win.contentView.addChildView(view)
-  return page
-}
-
-function readBrowserState(page: BrowserPage): BrowserPaneState {
-  const contents = page.view.webContents
-  if (contents.isDestroyed()) return { ...page.state, loading: false }
-  return {
-    ...page.state,
-    url: contents.getURL(),
-    title: contents.getTitle(),
+  const refs = new Map<string, { id: number; editable: boolean }>()
+  let generation = 0
+  let nextRef = 0
+  let closed = false
+  const state = (): Browser.State => ({
+    url: contents.getURL().slice(0, 16_384),
+    title: contents.getTitle().slice(0, 1_024),
     loading: contents.isLoading(),
     canGoBack: contents.navigationHistory.canGoBack(),
     canGoForward: contents.navigationHistory.canGoForward(),
+    generation,
+  })
+  const update = () => {
+    if (!closed) publish(state())
   }
-}
-
-export function destinationOrigin(input: string) {
-  if (!URL.canParse(input)) return
-  const url = new URL(input)
-  return /^https?:$/.test(url.protocol) && !url.username && !url.password ? url.origin : undefined
-}
-
-export function secureBrowserPage(contents: Electron.WebContents, approvedOrigin: () => string, blocked: () => void) {
   const session = contents.session
   session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
   session.setPermissionCheckHandler(() => false)
@@ -159,47 +63,229 @@ export function secureBrowserPage(contents: Electron.WebContents, approvedOrigin
   session.on("will-download", (event) => event.preventDefault())
   contents.setWindowOpenHandler(() => ({ action: "deny" }))
   contents.on("content-bounds-updated", (event) => event.preventDefault())
-  const guard = (event: Electron.Event<{ url: string; isMainFrame: boolean }>) => {
-    if (!event.isMainFrame || event.url === "about:blank" || destinationOrigin(event.url) === approvedOrigin()) return
+  const guard = (event: Electron.Event<{ url: string }>) => {
+    if (event.url === "about:blank" || destinationOrigin(event.url)) return
     event.preventDefault()
-    blocked()
+    publish(state(), "ERR_BLOCKED_BY_CLIENT")
   }
-  contents.on("will-navigate", guard)
+  contents.on("will-frame-navigate", guard)
   contents.on("will-redirect", guard)
-}
-
-export async function installBrowserNetwork(contents: Electron.WebContents, proxy: BrowserProxy) {
-  const session = contents.session
-  let disposed = false
-  const dispose = () => {
-    if (disposed) return
-    disposed = true
-    if (!contents.isDestroyed()) contents.removeAllListeners("login")
-    void session.closeAllConnections().catch(() => undefined)
-  }
-  contents.on("login", (event, _details, auth, callback) => {
-    if (!auth.isProxy || auth.scheme !== "basic") return
-    if (auth.host !== proxy.host || auth.port !== proxy.port || auth.realm !== "OpenCode Browser Proxy") return
-    event.preventDefault()
-    callback(proxy.credentials.username, proxy.credentials.password)
+  contents.on("did-stop-loading", update)
+  contents.on("did-navigate-in-page", update)
+  contents.on("page-title-updated", update)
+  contents.on("did-start-navigation", (event) => {
+    if (!event.isMainFrame) return
+    generation++
+    refs.clear()
+    update()
   })
-  contents.setWebRTCIPHandlingPolicy("disable_non_proxied_udp")
-  await session
-    .setProxy({ mode: "fixed_servers", proxyRules: proxy.url, proxyBypassRules: "<-loopback>" })
-    .then(() => session.closeAllConnections())
-    .catch((error: unknown) => {
-      dispose()
-      throw error
-    })
-  return dispose
+  contents.on("did-fail-load", (_event, code, error, _url, mainFrame) => {
+    if (!closed && mainFrame && code !== -3) publish(state(), error)
+  })
+  contents.on("render-process-gone", () => {
+    if (!closed) fail()
+  })
+  contents.debugger.on("detach", () => {
+    if (!closed) fail()
+  })
+  view.setVisible(false)
+  view.setBorderRadius(8)
+  win.contentView.addChildView(view)
+  return {
+    view,
+    state,
+    execute,
+    ready: Promise.resolve().then(() => contents.loadURL("about:blank")),
+    async command(command: BrowserPaneCommand) {
+      if (closed) throw new Error("not_attached")
+      if (command.type === "navigate") return navigate(command.url)
+      if (command.type === "stop") return contents.stop()
+      if (command.type === "reload") return contents.reload()
+      if (command.type === "back" && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack()
+      if (command.type === "forward" && contents.navigationHistory.canGoForward())
+        contents.navigationHistory.goForward()
+    },
+    dispose() {
+      if (closed) return
+      closed = true
+      refs.clear()
+      if (!win.isDestroyed()) win.contentView.removeChildView(view)
+      if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false })
+    },
+  }
+
+  async function execute(command: Browser.Command, signal: AbortSignal): Promise<Browser.Result> {
+    if (closed) throw new Error("not_attached")
+    if (signal.aborted) throw new Error("aborted")
+    if (generation !== command.generation) throw new Error("stale_ref")
+    if (command.type === "navigate") {
+      await navigate(command.url, signal)
+      return { type: "navigate", state: state() }
+    }
+    if (command.type === "snapshot") {
+      const tree = (await send("Accessibility.getFullAXTree", { depth: 6 })) as { nodes: AXNode[] }
+      refs.clear()
+      const nodes = new Map(tree.nodes.map((node) => [node.nodeId, node]))
+      const lines = [`Page: ${clean(state().title)}`, `URL: ${state().url}`, ""]
+      if (tree.nodes[0]) walk(tree.nodes[0], 0)
+      return {
+        type: "snapshot",
+        state: state(),
+        format: "opencode.semantic.v1",
+        content: lines.join("\n").slice(0, 40_960),
+      }
+
+      function walk(node: AXNode, depth: number) {
+        if (depth > 6 || lines.length >= 503) return
+        const role = (node.role?.value ?? "node").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40)
+        const properties = new Map((node.properties ?? []).map((item) => [item.name, item.value?.value]))
+        const editable =
+          ["textbox", "searchbox", "combobox", "spinbutton"].includes(role) || !!properties.get("editable")
+        if (!node.ignored) {
+          const actionable = properties.get("focusable") || /^(button|link|textbox|combobox)$/.test(role)
+          const ref = actionable && node.backendDOMNodeId ? `e${++nextRef}` : ""
+          if (ref && node.backendDOMNodeId)
+            refs.set(ref, {
+              id: node.backendDOMNodeId,
+              editable: editable && !properties.get("disabled") && !properties.get("readonly"),
+            })
+          const flags = ["checked", "disabled", "expanded", "selected"].flatMap((flag) =>
+            properties.has(flag) ? [`${flag}=${properties.get(flag)}`] : [],
+          )
+          lines.push(
+            `${"  ".repeat(depth)}${ref} [${role}] ${JSON.stringify(clean(node.name?.value))} ${flags.join(" ")}`,
+          )
+        }
+        // Editable descendants can repeat the field's value as static text.
+        if (!editable)
+          node.childIds?.forEach((id) => {
+            const child = nodes.get(id)
+            if (child) walk(child, depth + 1)
+          })
+      }
+    }
+    if (command.type === "screenshot") {
+      const source = await contents.capturePage()
+      if (signal.aborted) throw new Error("aborted")
+      if (generation !== command.generation) throw new Error("stale_ref")
+      const size = source.getSize()
+      if (!size.width || !size.height) throw new Error("internal")
+      const scale = Math.min(1, 2_000 / Math.max(size.width, size.height))
+      const image = source.resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale)),
+      })
+      const data = new Uint8Array(image.toPNG())
+      if (data.byteLength > 5 * 1_024 * 1_024) throw new Error("result_too_large")
+      return { type: "screenshot", state: state(), mediaType: "image/png", data, ...image.getSize() }
+    }
+    if (command.type === "click" || command.type === "fill") {
+      const target = refs.get(command.ref)
+      if (!target || (command.type === "fill" && !target.editable)) throw new Error("stale_ref")
+      if (command.type === "fill") {
+        await send("DOM.focus", { backendNodeId: target.id })
+        await key({ key: "a", code: "KeyA", modifiers: process.platform === "darwin" ? 4 : 2 })
+        await key({ key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 })
+        await send("Input.insertText", { text: command.text })
+      }
+      if (command.type === "click") {
+        await send("DOM.scrollIntoViewIfNeeded", { backendNodeId: target.id })
+        const result = (await send("DOM.getBoxModel", { backendNodeId: target.id })) as {
+          model: { content: number[] }
+        }
+        const box = result.model.content
+        const point = { x: (box[0] + box[4]) / 2, y: (box[1] + box[5]) / 2 }
+        for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+          await send("Input.dispatchMouseEvent", { type, ...point, button: "left", clickCount: 1 })
+        }
+      }
+    }
+    if (command.type === "press") {
+      const codes: Record<Browser.Key, number> = {
+        Enter: 13,
+        Tab: 9,
+        Escape: 27,
+        Backspace: 8,
+        Delete: 46,
+        ArrowUp: 38,
+        ArrowDown: 40,
+        ArrowLeft: 37,
+        ArrowRight: 39,
+        PageUp: 33,
+        PageDown: 34,
+        Home: 36,
+        End: 35,
+        Space: 32,
+      }
+      await key({
+        key: command.key === "Space" ? " " : command.key,
+        code: command.key,
+        windowsVirtualKeyCode: codes[command.key],
+      })
+    }
+    if (command.type === "scroll") {
+      const bounds = view.getBounds()
+      const distance = Math.min(2_000, command.pixels)
+      await send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x: bounds.width / 2,
+        y: bounds.height / 2,
+        deltaX: command.direction === "left" ? -distance : command.direction === "right" ? distance : 0,
+        deltaY: command.direction === "up" ? -distance : command.direction === "down" ? distance : 0,
+      })
+    }
+    if (generation !== command.generation) throw new Error("stale_ref")
+    return { type: command.type, state: state() }
+
+    function key(params: Record<string, unknown>) {
+      return send("Input.dispatchKeyEvent", { type: "keyDown", ...params }).finally(() =>
+        contents.debugger.sendCommand("Input.dispatchKeyEvent", { type: "keyUp", ...params }),
+      )
+    }
+
+    async function send(method: string, params: Record<string, unknown>): Promise<unknown> {
+      if (signal.aborted) throw new Error("aborted")
+      if (closed) throw new Error("not_attached")
+      if (generation !== command.generation) throw new Error("stale_ref")
+      if (!contents.debugger.isAttached()) contents.debugger.attach("1.3")
+      const result: unknown = await contents.debugger.sendCommand(method, params).catch((error: unknown) => {
+        if (/Could not find|No node with given id|Could not compute box model/i.test(String(error)))
+          throw new Error("stale_ref")
+        throw error
+      })
+      if (signal.aborted) throw new Error("aborted")
+      if (generation !== command.generation) throw new Error("stale_ref")
+      return result
+    }
+  }
+
+  async function navigate(input: string, signal?: AbortSignal) {
+    const value = input.trim() || "about:blank"
+    const local = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(value)
+    const url =
+      value === "about:blank" || /^[a-z][a-z\d+.-]*:\/\//i.test(value)
+        ? value
+        : `${local ? "http" : "https"}://${value}`
+    if (url.length > 16_384 || (url !== "about:blank" && !destinationOrigin(url))) throw new Error("invalid_url")
+    const cancel = () => {
+      if (!closed) contents.stop()
+    }
+    signal?.addEventListener("abort", cancel, { once: true })
+    await contents
+      .loadURL(url)
+      .catch(() => {
+        throw new Error(signal?.aborted ? "aborted" : "navigation_failed")
+      })
+      .finally(() => signal?.removeEventListener("abort", cancel))
+  }
 }
 
-function navigateHistory(page: BrowserPage, offset: -1 | 1) {
-  const history = page.view.webContents.navigationHistory
-  if (!history.canGoToOffset(offset)) return
-  const url = history.getAllEntries()[history.getActiveIndex() + offset]?.url
-  const origin = url === "about:blank" ? url : url && destinationOrigin(url)
-  if (!origin) throw new Error("browser.pane.destination.invalid")
-  page.approvedOrigin = origin
-  history.goToOffset(offset)
+function clean(value: unknown) {
+  return typeof value === "string" ? value.replaceAll(/\s+/g, " ").trim().slice(0, 300) : ""
+}
+
+export function destinationOrigin(input: string) {
+  if (!URL.canParse(input)) return
+  const url = new URL(input)
+  return /^https?:$/.test(url.protocol) && !url.username && !url.password ? url.origin : undefined
 }

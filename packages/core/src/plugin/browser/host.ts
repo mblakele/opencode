@@ -1,163 +1,128 @@
 export * as BrowserHost from "./host.js"
 
 import { Browser } from "@opencode-ai/schema/browser"
-import { Session } from "@opencode-ai/schema/session"
+import type { Session } from "@opencode-ai/schema/session"
 import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
 import { Context, Deferred, Effect, Layer, Schema, Scope } from "effect"
 
-export class RegistrationError extends Schema.TaggedError<RegistrationError>()("BrowserHost.RegistrationError", {
-  reason: Schema.Literals(["disabled", "unknown_session", "already_registered", "stale_registration", "stale_lease"]),
-  message: Schema.String,
-}) {}
-export class RequestError extends Schema.TaggedError<RequestError>()("BrowserHost.RequestError", {
+export class RequestError extends Schema.TaggedError<RequestError>()("Browser.RequestError", {
   code: Browser.ErrorCode,
   message: Schema.String,
 }) {}
+
 export interface Peer {
   readonly open: Effect.Effect<void, RequestError>
-  readonly request: (command: Browser.Command, leaseID: Browser.LeaseID) => Effect.Effect<Browser.Result, RequestError>
-}
-export interface Controller {
-  readonly closed: Effect.Effect<void>
-  readonly attach: (leaseID: Browser.LeaseID, state: Browser.State) => Effect.Effect<void, RegistrationError>
-  readonly state: (leaseID: Browser.LeaseID, state: Browser.State) => Effect.Effect<void, RegistrationError>
-  readonly detach: (leaseID: Browser.LeaseID) => Effect.Effect<void, RegistrationError>
-}
-export interface Available {
-  readonly type: "available"
-  readonly open: Effect.Effect<void, RequestError>
-}
-export interface Attached {
-  readonly type: "attached"
-  readonly leaseID: Browser.LeaseID
-  readonly state: Browser.State
-  readonly revoked: Effect.Effect<void>
   readonly request: (command: Browser.Command) => Effect.Effect<Browser.Result, RequestError>
 }
-export type Capability = Available | Attached
-export interface Interface {
-  readonly activate: Effect.Effect<void, never, Scope.Scope>
-  readonly release: (sessionID: Session.ID) => Effect.Effect<void>
-  readonly register: (sessionID: Session.ID, peer: Peer) => Effect.Effect<Controller, RegistrationError, Scope.Scope>
-  readonly get: (sessionID: Session.ID) => Effect.Effect<Capability | undefined>
-}
-export class Service extends Context.Service<Service, Interface>()("@opencode/BrowserHost") {}
 
+export interface Controller {
+  readonly closed: Effect.Effect<void>
+  readonly attach: (state: Browser.State) => Effect.Effect<void>
+  readonly state: (state: Browser.State) => Effect.Effect<void>
+  readonly detach: Effect.Effect<void>
+}
+
+type Attachment = { state: Browser.State; closed: Deferred.Deferred<void> }
 type Registration = {
-  readonly peer: Peer
-  readonly closed: Deferred.Deferred<void>
+  peer: Peer
   ready: Deferred.Deferred<void>
-  attachment?: { readonly leaseID: Browser.LeaseID; readonly revoked: Deferred.Deferred<void>; state: Browser.State }
+  closed: Deferred.Deferred<void>
+  attachment?: Attachment
 }
+type Capability =
+  | { type: "available"; open: Peer["open"] }
+  | { type: "attached"; state: Browser.State; request: Peer["request"] }
 
-export function make() {
-  return Effect.sync(() => {
-    let active = false
-    const registrations = new Map<Session.ID, Registration>()
-    const deferred = () => Deferred.makeUnsafe<void>()
-    const resolve = (value: Deferred.Deferred<void>) => Deferred.doneUnsafe(value, Effect.void)
-    const failed = (code: Browser.ErrorCode = "not_attached") =>
-      new RequestError({ code, message: `Browser request ${code.replaceAll("_", " ")}.` })
-    const invalid = (reason: RegistrationError["reason"]) =>
-      new RegistrationError({ reason, message: `Browser registration ${reason.replaceAll("_", " ")}.` })
-    const release = (id: Session.ID, expected?: Registration) =>
+export class Service extends Context.Service<
+  Service,
+  {
+    readonly activate: Effect.Effect<void, never, Scope.Scope>
+    readonly register: (id: Session.ID, peer: Peer) => Effect.Effect<Controller, RequestError, Scope.Scope>
+    readonly release: (id: Session.ID) => Effect.Effect<void>
+    readonly get: (id: Session.ID) => Effect.Effect<Capability | undefined>
+  }
+>()("@opencode/BrowserHost") {}
+export type Interface = Context.Service.Shape<typeof Service>
+
+export const layer = Layer.sync(Service, () => {
+  let active = false
+  const registrations = new Map<Session.ID, Registration>()
+  const unavailable = () => new RequestError({ code: "not_attached", message: "Browser is not attached." })
+  const detach = (entry: Registration) =>
+    Effect.gen(function* () {
+      if (entry.attachment) yield* Deferred.succeed(entry.attachment.closed, undefined)
+      entry.attachment = undefined
+      entry.ready = Deferred.makeUnsafe<void>()
+    })
+  const release = (id: Session.ID) =>
+    Effect.gen(function* () {
+      const entry = registrations.get(id)
+      if (!entry) return
+      registrations.delete(id)
+      yield* detach(entry)
+      yield* Deferred.succeed(entry.closed, undefined)
+    })
+  return Service.of({
+    activate: Effect.acquireRelease(
       Effect.sync(() => {
-        const current = registrations.get(id)
-        if (!current || (expected && expected !== current)) return
-        registrations.delete(id)
-        resolve(current.closed)
-        if (current.attachment) resolve(current.attachment.revoked)
-      })
-
-    return Service.of({
-      activate: Effect.acquireRelease(
-        Effect.sync(() => {
-          active = true
+        active = true
+      }),
+      () =>
+        Effect.gen(function* () {
+          active = false
+          yield* Effect.forEach(registrations.keys(), release, { discard: true })
         }),
-        () =>
+    ),
+    release,
+    register: Effect.fn("Browser.register")(function* (id, peer) {
+      if (!active || registrations.has(id)) return yield* unavailable()
+      const entry: Registration = { peer, ready: yield* Deferred.make<void>(), closed: yield* Deferred.make<void>() }
+      yield* Effect.acquireRelease(
+        Effect.sync(() => registrations.set(id, entry)),
+        () => (registrations.get(id) === entry ? release(id) : Effect.void),
+      )
+      return {
+        closed: Deferred.await(entry.closed),
+        attach: (state) =>
           Effect.gen(function* () {
-            active = false
-            yield* Effect.forEach(registrations.keys(), (id) => release(id), { discard: true })
+            if (entry.attachment) yield* detach(entry)
+            entry.attachment = { state, closed: yield* Deferred.make<void>() }
+            yield* Deferred.succeed(entry.ready, undefined)
           }),
-      ),
-      release,
-      register: Effect.fn("BrowserHost.register")(function* (id, peer) {
-        const registration = yield* Effect.acquireRelease(
-          Effect.suspend(() => {
-            if (!active) return invalid("disabled")
-            if (registrations.has(id)) return invalid("already_registered")
-            const current: Registration = { peer, closed: deferred(), ready: deferred() }
-            registrations.set(id, current)
-            return Effect.succeed(current)
+        state: (state) =>
+          Effect.sync(() => {
+            if (entry.attachment) entry.attachment.state = state
           }),
-          (current) => release(id, current),
-        )
-        const update = (lease: Browser.LeaseID, existing: boolean, change: () => void) =>
-          Effect.suspend(() => {
-            if (registrations.get(id) !== registration) return invalid("stale_registration")
-            if (existing && registration.attachment?.leaseID !== lease) return invalid("stale_lease")
-            change()
-            return Effect.void
-          })
+        detach: detach(entry),
+      }
+    }),
+    get: (id) =>
+      Effect.sync(() => {
+        const entry = registrations.get(id)
+        if (!entry) return
+        const attachment = entry.attachment
+        if (!attachment)
+          return {
+            type: "available" as const,
+            open: entry.peer.open.pipe(
+              Effect.andThen(Effect.suspend(() => Deferred.await(entry.ready))),
+              Effect.raceFirst(Deferred.await(entry.closed).pipe(Effect.andThen(unavailable()))),
+              Effect.timeoutOrElse({ duration: "15 seconds", orElse: unavailable }),
+            ),
+          }
         return {
-          closed: Deferred.await(registration.closed),
-          attach: (leaseID, state) =>
-            update(leaseID, false, () => {
-              if (registration.attachment) resolve(registration.attachment.revoked)
-              registration.attachment = { leaseID, state, revoked: deferred() }
-              resolve(registration.ready)
-            }),
-          state: (leaseID, state) =>
-            update(leaseID, true, () => {
-              if (registration.attachment) registration.attachment.state = state
-            }),
-          detach: (leaseID) =>
-            update(leaseID, true, () => {
-              if (registration.attachment) resolve(registration.attachment.revoked)
-              registration.attachment = undefined
-              registration.ready = deferred()
+          type: "attached" as const,
+          state: attachment.state,
+          request: (command: Browser.Command) =>
+            Effect.suspend(() => {
+              if (entry.attachment !== attachment) return unavailable()
+              return entry.peer
+                .request(command)
+                .pipe(Effect.raceFirst(Deferred.await(attachment.closed).pipe(Effect.andThen(unavailable()))))
             }),
         }
       }),
-      get: (id) =>
-        Effect.sync((): Capability | undefined => {
-          const current = registrations.get(id)
-          if (!current) return
-          const attachment = current.attachment
-          if (attachment) {
-            return {
-              type: "attached",
-              leaseID: attachment.leaseID,
-              state: attachment.state,
-              revoked: Deferred.await(attachment.revoked),
-              request: (command) =>
-                Effect.suspend(() => {
-                  if (registrations.get(id) !== current || current.attachment !== attachment) return failed()
-                  return current.peer.request(command, attachment.leaseID).pipe(
-                    Effect.raceFirst(Deferred.await(attachment.revoked).pipe(Effect.andThen(failed()))),
-                    Effect.flatMap((result) =>
-                      result.type === command.type ? Effect.succeed(result) : failed("protocol"),
-                    ),
-                  )
-                }),
-            }
-          }
-          const ready = current.ready
-          return {
-            type: "available",
-            open: Effect.suspend(() => {
-              if (registrations.get(id) !== current || current.ready !== ready || current.attachment) return failed()
-              return current.peer.open.pipe(
-                Effect.andThen(Deferred.await(ready)),
-                Effect.raceFirst(Deferred.await(current.closed).pipe(Effect.andThen(failed()))),
-                Effect.timeoutOrElse({ duration: "30 seconds", orElse: () => failed("timeout") }),
-              )
-            }),
-          }
-        }),
-    })
   })
-}
+})
 
-export const layer = Layer.effect(Service, make())
 export const node = makeLocationNode({ service: Service, layer, deps: [] })

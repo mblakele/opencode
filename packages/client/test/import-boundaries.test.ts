@@ -5,7 +5,6 @@ import { join, resolve, sep } from "node:path"
 
 const directory = resolve(import.meta.dir, "..")
 const effect = realpathSync(resolve(import.meta.dir, "../node_modules/effect"))
-const ws = realpathSync(resolve(import.meta.dir, "../node_modules/ws"))
 const schema = resolve(import.meta.dir, "../../schema")
 const protocol = resolve(import.meta.dir, "../../protocol")
 const core = resolve(import.meta.dir, "../../core")
@@ -18,7 +17,6 @@ describe("public import boundaries", () => {
     expect(within(root.all, effect)).toEqual([])
     expect(within(root.all, schema)).toEqual([])
     expect(within(root.all, protocol)).toEqual([])
-    expect(within(root.all, ws)).toEqual([])
     expect(within(root.all, core)).toEqual([])
     expect(within(root.all, server)).toEqual([])
 
@@ -29,11 +27,6 @@ describe("public import boundaries", () => {
     expect(within(network.eager, protocol).length).toBeGreaterThan(0)
     expect(within(network.all, core)).toEqual([])
     expect(within(network.all, server)).toEqual([])
-
-    const node = await bundleInputs("@opencode-ai/client/node", "node")
-    expect(within(node.all, ws).length).toBeGreaterThan(0)
-    expect(within(node.all, core)).toEqual([])
-    expect(within(node.all, server)).toEqual([])
 
     const promiseService = await bundleInputs("@opencode-ai/client/service", "bun")
 
@@ -52,7 +45,7 @@ describe("public import boundaries", () => {
   })
 })
 
-async function bundleInputs(specifier: string, target: "browser" | "bun" | "node") {
+async function bundleInputs(specifier: string, target: "browser" | "bun") {
   const temporary = await mkdtemp(join(import.meta.dir, ".import-boundary-"))
   const entrypoint = join(temporary, "index.ts")
   const metafile = join(temporary, "meta.json")

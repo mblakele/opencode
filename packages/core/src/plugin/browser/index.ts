@@ -16,9 +16,7 @@ export const Plugin = define({
     yield* ctx.session.hook("context", (event) =>
       browser.get(event.sessionID).pipe(
         Effect.map((current) => {
-          for (const name of BrowserTools.names) {
-            if (!current || (name === "browser_open") !== (current.type === "available")) delete event.tools[name]
-          }
+          if (!current) delete event.tools.browser
         }),
       ),
     )

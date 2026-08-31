@@ -24,22 +24,18 @@ export const FromClient = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("browser.control.attach"),
-    leaseID: Browser.LeaseID,
     state: Browser.State,
   }),
   Schema.Struct({
     type: Schema.Literal("browser.control.state"),
-    leaseID: Browser.LeaseID,
     state: Browser.State,
   }),
   Schema.Struct({
     type: Schema.Literal("browser.control.detach"),
-    leaseID: Browser.LeaseID,
   }),
   Schema.Struct({
     type: Schema.Literal("browser.control.response"),
     requestID: RequestID,
-    leaseID: Browser.LeaseID,
     outcome: Browser.Outcome,
   }),
 ])
@@ -51,19 +47,13 @@ export const FromServer = Schema.Union([
   Schema.Struct({ type: Schema.Literal("browser.control.registered") }),
   Schema.Struct({ type: Schema.Literal("browser.control.open") }),
   Schema.Struct({
-    type: Schema.Literal("browser.control.attached"),
-    leaseID: Browser.LeaseID,
-  }),
-  Schema.Struct({
     type: Schema.Literal("browser.control.request"),
     requestID: RequestID,
-    leaseID: Browser.LeaseID,
     command: Browser.Command,
   }),
   Schema.Struct({
     type: Schema.Literal("browser.control.cancel"),
     requestID: RequestID,
-    leaseID: Browser.LeaseID,
   }),
 ])
   .pipe(Schema.toTaggedUnion("type"))

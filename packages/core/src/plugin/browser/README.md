@@ -13,9 +13,12 @@ browser policy.
   rendering. Permissions follow the existing agent rules and permission service,
   like other built-in tools. The plugin does not add or change agent defaults.
 
-The server adapter owns WebSocket and TCP I/O. It validates the Session and selects
+The server adapter owns the control WebSocket. It validates the Session and selects
 its instance before accessing the bridge. Session deletion or movement releases
 the old attachment through the plugin's event subscription.
 
 Disable the feature with `plugins: ["-opencode.browser"]`. There are no legacy
 plugin IDs, compatibility entrypoints, or process-global browser registrations.
+
+Electron loads pages using the desktop's network. There is no server-side proxy
+or generic client/driver API; the desktop implements browser commands directly.

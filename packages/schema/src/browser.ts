@@ -1,19 +1,7 @@
 export * as Browser from "./browser.js"
 
 import { Schema } from "effect"
-import { ascending } from "./identifier.js"
-import { NonNegativeInt, PositiveInt, statics } from "./schema.js"
-
-const LeaseIDSchema = Schema.String.check(Schema.isPattern(/^brl_[0-9A-Za-z]+$/))
-  .pipe(Schema.brand("Browser.LeaseID"))
-  .annotate({ identifier: "Browser.LeaseID" })
-
-export const LeaseID = LeaseIDSchema.pipe(
-  statics((schema: typeof LeaseIDSchema) => ({
-    create: () => schema.make("brl_" + ascending()),
-  })),
-)
-export type LeaseID = typeof LeaseID.Type
+import { NonNegativeInt, PositiveInt } from "./schema.js"
 
 export const Ref = Schema.String.check(Schema.isPattern(/^e[1-9][0-9]*$/))
   .pipe(Schema.brand("Browser.Ref"))
