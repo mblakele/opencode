@@ -1,6 +1,6 @@
 export * as BrowserControlConnection from "./browser-control-connection"
 
-import { BrowserHost } from "@opencode-ai/core/browser-host"
+import { BrowserHost } from "@opencode-ai/core/plugin/browser/host"
 import { BrowserControlProtocol } from "@opencode-ai/protocol/browser-control"
 import { Browser } from "@opencode-ai/schema/browser"
 import { BrowserControl } from "@opencode-ai/schema/browser-control"
@@ -8,7 +8,7 @@ import { Deferred, Effect } from "effect"
 import { Socket } from "effect/unstable/socket"
 
 export const run = Effect.fn("BrowserControlConnection.run")(function* (
-  browser: BrowserHost.Interface,
+  register: BrowserHost.Interface["register"],
   socket: Socket.Socket,
   opened: Effect.Effect<void>,
 ) {
@@ -70,7 +70,12 @@ export const run = Effect.fn("BrowserControlConnection.run")(function* (
       if (message.type !== "browser.control.register") {
         return yield* Effect.fail(new Error("Expected browser registration."))
       }
-      controller = yield* browser.register(message.sessionID, peer)
+      controller = yield* register(message.sessionID, peer)
+      yield* controller.closed.pipe(
+        Effect.andThen(write(new Socket.CloseEvent(1000, "Browser control registration released"))),
+        Effect.catch(() => Effect.void),
+        Effect.forkScoped,
+      )
       return yield* send({ type: "browser.control.registered" })
     }
     if (message.type === "browser.control.register") {

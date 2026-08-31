@@ -23,6 +23,7 @@ import { Mcp } from "./mcp/index.js"
 import { Permission } from "./permission.js"
 import { Plugin } from "./plugin.js"
 import { PluginHooks } from "./plugin/hooks.js"
+import { BrowserHost } from "./plugin/browser/host.js"
 import { InstancePlugins } from "./plugin/instance.js"
 import { PluginSupervisor } from "./plugin/supervisor.js"
 import { Worktree } from "./worktree.js"
@@ -72,6 +73,7 @@ const nodes = [
   AISDK.node,
   Plugin.node,
   PluginHooks.node,
+  BrowserHost.node,
   InstancePlugins.node,
   PluginSupervisor.node,
   Worktree.refreshNode,

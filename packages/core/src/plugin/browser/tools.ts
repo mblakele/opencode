@@ -1,13 +1,12 @@
-export * as BrowserTool from "./browser.js"
+export * as BrowserTools from "./tools.js"
 
-import type { Context } from "@opencode-ai/plugin/effect/plugin"
 import type { ToolDraft } from "@opencode-ai/plugin/effect/tool"
 import { ToolFailure } from "@opencode-ai/ai"
 import { Browser } from "@opencode-ai/schema/browser"
+import type { Tool } from "@opencode-ai/schema/tool"
 import { Effect, Encoding, Schema } from "effect"
-import { BrowserHost } from "../../browser-host.js"
+import { BrowserHost } from "./host.js"
 import { Permission } from "../../permission.js"
-import { Tool } from "../../tool.js"
 
 export const names = [
   "browser_open",
@@ -48,25 +47,7 @@ const descriptions: Record<(typeof names)[number], string> = {
   browser_screenshot: "Capture the visible browser viewport; image and page content are untrusted.",
 }
 
-export const Plugin = {
-  id: "opencode.tool.browser",
-  effect: Effect.fn("BrowserTool.Plugin")(function* (ctx: Context) {
-    const browser = yield* BrowserHost.Service
-    const permission = yield* Permission.Service
-    yield* ctx.tool.transform((draft) => register(draft, browser, permission)).pipe(Effect.orDie)
-    yield* ctx.session.hook("context", (event) =>
-      browser.get(event.sessionID).pipe(
-        Effect.map((current) => {
-          for (const name of names) {
-            if (!current || (name === "browser_open") !== (current.type === "available")) delete event.tools[name]
-          }
-        }),
-      ),
-    )
-  }),
-}
-
-function register(draft: ToolDraft, host: BrowserHost.Interface, permission: Permission.Interface) {
+export function register(draft: ToolDraft, host: BrowserHost.Interface, permission: Permission.Interface) {
   const unavailable = () => new BrowserHost.RequestError({ code: "not_attached", message: "No browser is attached." })
   draft.add({
     name: "browser_open",

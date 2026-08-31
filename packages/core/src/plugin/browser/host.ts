@@ -1,15 +1,12 @@
-export * as BrowserHost from "./browser-host.js"
+export * as BrowserHost from "./host.js"
 
 import { Browser } from "@opencode-ai/schema/browser"
 import { Session } from "@opencode-ai/schema/session"
-import { makeGlobalNode } from "@opencode-ai/util/effect/app-node"
-import { Context, Deferred, Effect, Layer, Schema, Scope, Stream } from "effect"
-import { Bus } from "./bus.js"
-import { SessionEvent } from "./session/event.js"
-import { SessionStore } from "./session/store.js"
+import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
+import { Context, Deferred, Effect, Layer, Schema, Scope } from "effect"
 
 export class RegistrationError extends Schema.TaggedError<RegistrationError>()("BrowserHost.RegistrationError", {
-  reason: Schema.Literals(["unknown_session", "already_registered", "stale_registration", "stale_lease"]),
+  reason: Schema.Literals(["disabled", "unknown_session", "already_registered", "stale_registration", "stale_lease"]),
   message: Schema.String,
 }) {}
 export class RequestError extends Schema.TaggedError<RequestError>()("BrowserHost.RequestError", {
@@ -21,6 +18,7 @@ export interface Peer {
   readonly request: (command: Browser.Command, leaseID: Browser.LeaseID) => Effect.Effect<Browser.Result, RequestError>
 }
 export interface Controller {
+  readonly closed: Effect.Effect<void>
   readonly attach: (leaseID: Browser.LeaseID, state: Browser.State) => Effect.Effect<void, RegistrationError>
   readonly state: (leaseID: Browser.LeaseID, state: Browser.State) => Effect.Effect<void, RegistrationError>
   readonly detach: (leaseID: Browser.LeaseID) => Effect.Effect<void, RegistrationError>
@@ -38,6 +36,8 @@ export interface Attached {
 }
 export type Capability = Available | Attached
 export interface Interface {
+  readonly activate: Effect.Effect<void, never, Scope.Scope>
+  readonly release: (sessionID: Session.ID) => Effect.Effect<void>
   readonly register: (sessionID: Session.ID, peer: Peer) => Effect.Effect<Controller, RegistrationError, Scope.Scope>
   readonly get: (sessionID: Session.ID) => Effect.Effect<Capability | undefined>
 }
@@ -50,11 +50,9 @@ type Registration = {
   attachment?: { readonly leaseID: Browser.LeaseID; readonly revoked: Deferred.Deferred<void>; state: Browser.State }
 }
 
-export function make(
-  exists: (id: Session.ID) => Effect.Effect<boolean>,
-  deleted: Stream.Stream<Session.ID> = Stream.never,
-) {
-  return Effect.gen(function* () {
+export function make() {
+  return Effect.sync(() => {
+    let active = false
     const registrations = new Map<Session.ID, Registration>()
     const deferred = () => Deferred.makeUnsafe<void>()
     const resolve = (value: Deferred.Deferred<void>) => Deferred.doneUnsafe(value, Effect.void)
@@ -71,12 +69,22 @@ export function make(
         if (current.attachment) resolve(current.attachment.revoked)
       })
 
-    yield* Stream.runForEach(deleted, release).pipe(Effect.forkScoped)
     return Service.of({
+      activate: Effect.acquireRelease(
+        Effect.sync(() => {
+          active = true
+        }),
+        () =>
+          Effect.gen(function* () {
+            active = false
+            yield* Effect.forEach(registrations.keys(), (id) => release(id), { discard: true })
+          }),
+      ),
+      release,
       register: Effect.fn("BrowserHost.register")(function* (id, peer) {
-        if (!(yield* exists(id))) return yield* invalid("unknown_session")
         const registration = yield* Effect.acquireRelease(
           Effect.suspend(() => {
+            if (!active) return invalid("disabled")
             if (registrations.has(id)) return invalid("already_registered")
             const current: Registration = { peer, closed: deferred(), ready: deferred() }
             registrations.set(id, current)
@@ -92,6 +100,7 @@ export function make(
             return Effect.void
           })
         return {
+          closed: Deferred.await(registration.closed),
           attach: (leaseID, state) =>
             update(leaseID, false, () => {
               if (registration.attachment) resolve(registration.attachment.revoked)
@@ -150,15 +159,5 @@ export function make(
   })
 }
 
-export const layer = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const sessions = yield* SessionStore.Service
-    const bus = yield* Bus.Service
-    return yield* make(
-      (id) => sessions.get(id).pipe(Effect.map((session) => session !== undefined)),
-      bus.subscribe(SessionEvent.Deleted).pipe(Stream.map((event) => event.data.sessionID)),
-    )
-  }),
-)
-export const node = makeGlobalNode({ service: Service, layer, deps: [SessionStore.node, Bus.node] })
+export const layer = Layer.effect(Service, make())
+export const node = makeLocationNode({ service: Service, layer, deps: [] })

@@ -29,7 +29,11 @@ it.live("proxies HTTP and CONNECT through authenticated, Session-isolated browse
       port: 0,
       password: "browser-secret",
       database: { path: ":memory:" },
-      config: { directory: directory.path, project: false, content: "{}" },
+      config: {
+        directory: directory.path,
+        project: false,
+        content: JSON.stringify({ plugins: ["-*", "opencode.agent", "opencode.browser"] }),
+      },
       fs: { filewatcher: false },
     })
     const headers = { Authorization: `Basic ${btoa("opencode:browser-secret")}` }
@@ -136,6 +140,35 @@ it.live("proxies HTTP and CONNECT through authenticated, Session-isolated browse
         ),
       ),
     ).toEqual([426, 426, 404, 404])
+  }),
+)
+
+it.live("rejects browser registration when the plugin is disabled", () =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => tmpdir("opencode-browser-plugin-")),
+      (temporary) => Effect.promise(() => temporary[Symbol.asyncDispose]()),
+    )
+    const server = yield* ServerProcess.start<never, never>({
+      hostname: "127.0.0.1",
+      port: 0,
+      password: "browser-secret",
+      database: { path: ":memory:" },
+      config: {
+        directory: directory.path,
+        project: false,
+        content: JSON.stringify({ plugins: ["-*", "opencode.agent"] }),
+      },
+      fs: { filewatcher: false },
+    })
+    const client = OpenCode.make({
+      baseUrl: HttpServer.formatAddress(server.address),
+      headers: { Authorization: `Basic ${btoa("opencode:browser-secret")}` },
+    })
+    const session = yield* Effect.promise(() => client.session.create({ location: { directory: directory.path } }))
+    yield* Effect.promise(async () => {
+      await expect(client.browser.register({ sessionID: session.id, open: () => undefined })).rejects.toThrow()
+    })
   }),
 )
 

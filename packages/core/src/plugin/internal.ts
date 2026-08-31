@@ -7,7 +7,8 @@ import { AppProcess } from "@opencode-ai/util/process"
 import { Context, Effect, Scope } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import { Agent } from "../agent.js"
-import { BrowserHost } from "../browser-host.js"
+import { BrowserHost } from "./browser/host.js"
+import { BrowserPlugin } from "./browser/index.js"
 import { Catalog } from "../catalog.js"
 import { Command } from "../command.js"
 import { Config } from "../config.js"
@@ -59,7 +60,6 @@ import { Snapshot } from "../snapshot.js"
 import { Skill } from "../skill.js"
 import { SkillDiscovery } from "../skill/discovery.js"
 import { Watcher } from "../filesystem/watcher.js"
-import { BrowserTool } from "../tool/plugin/browser.js"
 import { PatchTool } from "../tool/plugin/patch.js"
 import { EditTool } from "../tool/plugin/edit.js"
 import { GlobTool } from "../tool/plugin/glob.js"
@@ -252,7 +252,7 @@ const pre = [
   ModelsDevPlugin,
   ...ProviderPlugins,
   ...WebSearchPlugins,
-  BrowserTool.Plugin,
+  BrowserPlugin.Plugin,
   PatchTool.Plugin,
   EditTool.Plugin,
   GlobTool.Plugin,

@@ -1,6 +1,6 @@
 export * as BrowserTunnelServer from "./browser-tunnel"
 
-import { BrowserHost } from "@opencode-ai/core/browser-host"
+import { BrowserHost } from "@opencode-ai/core/plugin/browser/host"
 import { BrowserTunnelProtocol } from "@opencode-ai/protocol/browser-tunnel"
 import type { Browser } from "@opencode-ai/schema/browser"
 import type { BrowserTunnel } from "@opencode-ai/schema/browser-tunnel"
@@ -25,16 +25,16 @@ export interface Interface {
     readonly sessionID: Session.ID
     readonly leaseID: Browser.LeaseID
     readonly target: BrowserTunnel.Target
-  }) => Effect.Effect<Connection, OpenError, Scope.Scope>
+  }) => Effect.Effect<Connection, OpenError, Scope.Scope | BrowserHost.Service>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/server/BrowserTunnel") {}
 
-export function make(): Effect.Effect<Interface, never, BrowserHost.Service> {
+export function make(): Effect.Effect<Interface> {
   return Effect.gen(function* () {
-    const browser = yield* BrowserHost.Service
     const active = yield* SynchronizedRef.make(0)
     const open: Interface["open"] = Effect.fn("BrowserTunnel.open")(function* (input) {
+      const browser = yield* BrowserHost.Service
       const capability = yield* browser.get(input.sessionID)
       if (!capability || capability.type !== "attached") {
         return yield* new OpenError({ status: 404, message: "No browser is attached to this Session." })

@@ -1,10 +1,12 @@
-import { BrowserHost } from "@opencode-ai/core/browser-host"
+import { Instance } from "@opencode-ai/core/instance/service"
+import { BrowserHost } from "@opencode-ai/core/plugin/browser/host"
+import { PluginSupervisor } from "@opencode-ai/core/plugin/supervisor-service"
+import { Session } from "@opencode-ai/core/session"
 import { BrowserControlProtocol } from "@opencode-ai/protocol/browser-control"
 import { BrowserTunnelProtocol } from "@opencode-ai/protocol/browser-tunnel"
 import { Browser } from "@opencode-ai/schema/browser"
 import { BrowserTunnel } from "@opencode-ai/schema/browser-tunnel"
-import { Session } from "@opencode-ai/schema/session"
-import { Effect, Option, Result, Schema } from "effect"
+import { Deferred, Effect, Option, Schema } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "../api"
@@ -18,9 +20,35 @@ const decodeTunnel = Schema.decodeUnknownOption(
 
 export const BrowserHandler = HttpApiBuilder.group(Api, "server.browser", (handlers) =>
   Effect.gen(function* () {
-    const browser = yield* BrowserHost.Service
+    const sessions = yield* Session.Service
+    const instances = yield* Instance.Service
     const tunnels = yield* BrowserTunnelServer.Service
     const cors = yield* CorsConfig
+    const register: BrowserHost.Interface["register"] = Effect.fn("BrowserHandler.register")(function* (id, peer) {
+      const session = yield* sessions
+        .get(id)
+        .pipe(
+          Effect.mapError(
+            () => new BrowserHost.RegistrationError({ reason: "unknown_session", message: "Session not found." }),
+          ),
+        )
+      const ready = yield* Deferred.make<BrowserHost.Controller, BrowserHost.RegistrationError>()
+      // Retain the Location while the socket owns its registration.
+      yield* Effect.gen(function* () {
+        const plugins = yield* PluginSupervisor.Service
+        yield* plugins.flush
+        const browser = yield* BrowserHost.Service
+        const controller = yield* browser.register(id, peer)
+        yield* Deferred.succeed(ready, controller)
+        yield* controller.closed
+      }).pipe(
+        Effect.scoped,
+        instances.provide(session),
+        Effect.catchCause((cause) => Deferred.failCause(ready, cause)),
+        Effect.forkScoped,
+      )
+      return yield* Deferred.await(ready)
+    })
 
     return handlers
       .handleRaw(
@@ -30,7 +58,7 @@ export const BrowserHandler = HttpApiBuilder.group(Api, "server.browser", (handl
           if (rejected) return rejected
           const socket = yield* Effect.orDie(ctx.request.upgrade)
           yield* BrowserControlConnection.run(
-            browser,
+            register,
             socket,
             Effect.sync(() => markUpgraded(ctx.request)),
           )
@@ -54,14 +82,30 @@ export const BrowserHandler = HttpApiBuilder.group(Api, "server.browser", (handl
                 )
               : undefined
           if (!input) return HttpServerResponse.empty({ status: 400 })
-          const connection = yield* tunnels.open(input).pipe(Effect.result)
-          if (Result.isFailure(connection)) return HttpServerResponse.empty({ status: connection.failure.status })
-          const socket = yield* Effect.orDie(ctx.request.upgrade)
-          yield* connection.success.relay(
-            socket,
-            Effect.sync(() => markUpgraded(ctx.request)),
+          return yield* Effect.gen(function* () {
+            const session = yield* sessions
+              .get(input.sessionID)
+              .pipe(
+                Effect.mapError(
+                  () => new BrowserTunnelServer.OpenError({ status: 404, message: "Session not found." }),
+                ),
+              )
+            return yield* Effect.gen(function* () {
+              const plugins = yield* PluginSupervisor.Service
+              yield* plugins.flush
+              const connection = yield* tunnels.open(input)
+              const socket = yield* Effect.orDie(ctx.request.upgrade)
+              yield* connection.relay(
+                socket,
+                Effect.sync(() => markUpgraded(ctx.request)),
+              )
+              return HttpServerResponse.empty()
+            }).pipe(instances.provide(session))
+          }).pipe(
+            Effect.catchTag("BrowserTunnel.OpenError", (error) =>
+              Effect.succeed(HttpServerResponse.empty({ status: error.status })),
+            ),
           )
-          return HttpServerResponse.empty()
         }),
       )
   }),
