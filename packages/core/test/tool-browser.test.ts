@@ -57,9 +57,8 @@ const browserLayer = Layer.effect(
 )
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([Tool.node, BrowserHost.node, browserTool]), [
-    [BrowserHost.node, browserLayer],
-    [
-      Permission.node,
+    BrowserHost.node.replace(browserLayer),
+    Permission.node.replace(
       permissionLayer({
         assert: (input) =>
           Effect.suspend(() => {
@@ -69,8 +68,8 @@ const it = testEffect(
               : Effect.void
           }),
       }),
-    ],
-    [Image.node, imagePassthrough],
+    ),
+    Image.node.replace(imagePassthrough),
   ]),
 )
 const call = (name: string, input: Record<string, unknown> = {}, session = sessionID) => ({
