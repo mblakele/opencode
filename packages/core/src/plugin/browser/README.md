@@ -1,7 +1,7 @@
 # Browser Plugin
 
-The browser feature owns its tools, context hooks, and live
-attachment state here. Generic agent, session, and tool services contain no
+The browser feature owns its tools, context hooks, and connection state here.
+Generic agent, session, and tool services contain no
 browser policy.
 
 - `index.ts` registers tools and lifecycle hooks through the existing plugin
@@ -22,3 +22,7 @@ plugin IDs, compatibility entrypoints, or process-global browser registrations.
 
 Electron loads pages using the desktop's network. There is no server-side proxy
 or generic client/driver API; the desktop implements browser commands directly.
+
+`Browser.Action` defines toolbar and agent actions once. A connection reports
+either `null` (no page) or `Browser.State` (an open page). Commands return page
+state, snapshot text, or a screenshot through the same request/response path.

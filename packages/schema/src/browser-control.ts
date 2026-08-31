@@ -23,15 +23,8 @@ export const FromClient = Schema.Union([
     sessionID: SessionID,
   }),
   Schema.Struct({
-    type: Schema.Literal("browser.control.attach"),
-    state: Browser.State,
-  }),
-  Schema.Struct({
     type: Schema.Literal("browser.control.state"),
-    state: Browser.State,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("browser.control.detach"),
+    state: Schema.NullOr(Browser.State),
   }),
   Schema.Struct({
     type: Schema.Literal("browser.control.response"),
@@ -45,7 +38,6 @@ export type FromClient = typeof FromClient.Type
 
 export const FromServer = Schema.Union([
   Schema.Struct({ type: Schema.Literal("browser.control.registered") }),
-  Schema.Struct({ type: Schema.Literal("browser.control.open") }),
   Schema.Struct({
     type: Schema.Literal("browser.control.request"),
     requestID: RequestID,

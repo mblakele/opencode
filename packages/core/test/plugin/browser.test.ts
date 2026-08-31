@@ -20,18 +20,19 @@ it.effect("scopes the desktop browser registration to plugin activation", () =>
       generation: 0,
     }
     const peer: BrowserHost.Peer = {
-      open: Effect.void,
-      request: () => Effect.succeed({ type: "snapshot", state, format: "opencode.semantic.v1", content: "Page" }),
+      request: () => Effect.succeed({ type: "snapshot", state, content: "Page" }),
     }
-    expect((yield* browser.register(sessionID, peer).pipe(Effect.flip)).code).toBe("not_attached")
+    expect((yield* browser.register(sessionID, peer).pipe(Effect.flip)).message).toBe("Browser is unavailable.")
     const scope = yield* Scope.make()
     yield* browser.activate.pipe(Scope.provide(scope))
     const connection = yield* browser.register(sessionID, peer)
-    expect((yield* browser.get(sessionID))?.type).toBe("available")
-    yield* connection.attach(state)
+    expect((yield* browser.get(sessionID))?.state).toBeNull()
+    yield* connection.state(state)
     const attached = yield* browser.get(sessionID)
-    if (attached?.type !== "attached") return yield* Effect.die("Expected attached browser")
-    expect(yield* attached.request({ type: "snapshot", generation: 0 })).toMatchObject({ content: "Page" })
+    if (!attached?.state) return yield* Effect.die("Expected attached browser")
+    expect(yield* attached.request({ action: { type: "snapshot" }, generation: 0 })).toMatchObject({ content: "Page" })
+    yield* connection.state(null)
+    expect((yield* browser.get(sessionID))?.state).toBeNull()
     yield* Scope.close(scope, Exit.void)
     yield* connection.closed
     expect(yield* browser.get(sessionID)).toBeUndefined()

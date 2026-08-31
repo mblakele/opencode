@@ -1,3 +1,4 @@
+import { Browser } from "@opencode-ai/schema/browser"
 import { Schema } from "effect"
 import { Rpc } from "effect/unstable/rpc"
 
@@ -11,29 +12,20 @@ const endpoint = Schema.Struct({
 const target = Schema.Struct({ sessionID: text(256).check(Schema.isStartsWith("ses")), endpoint })
 const bounds = Schema.Struct({ x: Schema.Finite, y: Schema.Finite, width: Schema.Finite, height: Schema.Finite })
 const layout = Schema.Struct({ visible: Schema.Boolean, bounds: Schema.optionalKey(bounds) })
-const command = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("navigate"), url: text(16_384) }),
-  Schema.Struct({ type: Schema.Literals(["back", "forward", "reload", "stop"]) }),
-])
 export const BrowserPaneRequestSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("register"), bindingID, target }),
   Schema.Struct({ type: Schema.Literal("layout"), bindingID, layout: Schema.optionalKey(layout) }),
-  Schema.Struct({ type: Schema.Literal("command"), bindingID, command }),
+  Schema.Struct({ type: Schema.Literal("command"), bindingID, command: Browser.Action }),
   Schema.Struct({ type: Schema.Literal("close"), bindingID }),
 ])
 export type BrowserPaneRequest = Schema.Schema.Type<typeof BrowserPaneRequestSchema>
 
-const state = Schema.Struct({
-  url: Schema.String,
-  title: Schema.String,
-  loading: Schema.Boolean,
-  canGoBack: Schema.Boolean,
-  canGoForward: Schema.Boolean,
-  ready: Schema.Boolean,
-  error: Schema.optionalKey(Schema.String),
-})
 export const BrowserPaneEventSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("open") }),
-  Schema.Struct({ type: Schema.Literal("state"), state }),
+  Schema.Struct({
+    type: Schema.Literal("state"),
+    state: Schema.NullOr(Browser.State),
+    error: Schema.optionalKey(Schema.String),
+  }),
 ])
 export const BrowserPaneRpc = Rpc.make("BrowserPane", { payload: { request: BrowserPaneRequestSchema } })

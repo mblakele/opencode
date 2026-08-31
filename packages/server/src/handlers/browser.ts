@@ -18,9 +18,7 @@ export const BrowserHandler = HttpApiBuilder.group(Api, "server.browser", (handl
     const register: BrowserHost.Interface["register"] = Effect.fn("Browser.register")(function* (id, peer) {
       const session = yield* sessions
         .get(id)
-        .pipe(
-          Effect.mapError(() => new BrowserHost.RequestError({ code: "not_attached", message: "Session not found." })),
-        )
+        .pipe(Effect.mapError(() => new BrowserHost.RequestError({ message: "Session not found." })))
       const ready = yield* Deferred.make<BrowserHost.Controller, BrowserHost.RequestError>()
       // Keep the selected instance alive for the connection, not just registration.
       yield* Effect.gen(function* () {

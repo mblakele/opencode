@@ -55,7 +55,7 @@ export function SessionBrowserPane(props: {
     if (frame === undefined) frame = requestAnimationFrame(measure)
   }
 
-  createEffect(() => !store.editing && setStore("address", state().url))
+  createEffect(() => !store.editing && setStore("address", state()?.url ?? ""))
   createEffect(on([() => platform.webviewZoom?.(), () => dialog.active, () => store.visible], () => schedule(300)))
   createResizeObserver(() => surface, schedule.bind(null, 0))
   createEventListener(window, "resize", () => schedule(300))
@@ -75,7 +75,7 @@ export function SessionBrowserPane(props: {
           {(direction) => (
             <IconButton
               {...button}
-              disabled={!state().ready || !state()[direction === "back" ? "canGoBack" : "canGoForward"]}
+              disabled={!state()?.[direction === "back" ? "canGoBack" : "canGoForward"]}
               aria-label={language.t(direction === "back" ? "common.goBack" : "common.goForward")}
               onClick={() => props.browser.command({ type: direction })}
               icon={<Icon name={direction === "back" ? "chevron-left" : "chevron-right"} size="small" />}
@@ -84,11 +84,11 @@ export function SessionBrowserPane(props: {
         </For>
         <IconButton
           {...button}
-          disabled={!state().ready}
-          aria-label={language.t(state().loading ? "prompt.action.stop" : "error.page.action.reload")}
-          onClick={() => props.browser.command(state().loading ? { type: "stop" } : { type: "reload" })}
+          disabled={!state()}
+          aria-label={language.t(state()?.loading ? "prompt.action.stop" : "error.page.action.reload")}
+          onClick={() => props.browser.command(state()?.loading ? { type: "stop" } : { type: "reload" })}
           icon={
-            <Show when={state().loading} fallback={<Icon name="reset" size="small" />}>
+            <Show when={state()?.loading} fallback={<Icon name="reset" size="small" />}>
               <Spinner class="size-3" />
             </Show>
           }
@@ -103,11 +103,11 @@ export function SessionBrowserPane(props: {
           <input
             class="w-full h-7 px-2 rounded-md border border-v2-border-border-muted bg-v2-background-bg-base text-12-regular text-v2-text-text-base outline-none focus:border-v2-border-border-focus"
             value={store.address}
-            disabled={!state().ready}
+            disabled={!state()}
             placeholder={language.t("session.browser.address.placeholder")}
             aria-label={language.t("session.browser.address")}
             onFocus={() => setStore("editing", true)}
-            onBlur={() => setStore({ editing: false, address: state().url })}
+            onBlur={() => setStore({ editing: false, address: state()?.url ?? "" })}
             onInput={(event) => setStore("address", event.currentTarget.value)}
           />
         </form>
@@ -118,9 +118,9 @@ export function SessionBrowserPane(props: {
           icon={<Icon name="close-small" size="small" />}
         />
       </div>
-      <Show when={state().error}>
+      <Show when={props.browser.error()}>
         <div class="shrink-0 px-3 py-1.5 text-12-regular text-text-danger-base border-b border-v2-border-border-muted">
-          {state().error}
+          {props.browser.error()}
         </div>
       </Show>
       <div ref={surface} class="min-h-0 flex-1 bg-v2-background-bg-base" />

@@ -17,14 +17,8 @@ export function createSessionBrowser(session: SessionModel) {
   const [state, setState] = createStore({
     opened: false,
     registration: undefined as BrowserPaneRegistration | undefined,
-    browser: {
-      url: "",
-      title: "",
-      loading: false,
-      canGoBack: false,
-      canGoForward: false,
-      ready: false,
-    } as BrowserPaneState,
+    browser: null as BrowserPaneState,
+    error: undefined as string | undefined,
   })
   const available = createMemo(
     () =>
@@ -44,14 +38,14 @@ export function createSessionBrowser(session: SessionModel) {
   createEffect(() => {
     const sessionID = session.identity.sessionID()
     if (!available() || !sessionID || !platform.browserPane) {
-      setState({ opened: false, registration: undefined })
+      setState({ opened: false, registration: undefined, browser: null, error: undefined })
       return
     }
     const owner = session.ownership.capture()
     const registration = platform.browserPane.register({ sessionID, endpoint: server.conn.http }, (event) =>
-      owner.run(() => (event.type === "open" ? open() : setState("browser", { error: undefined, ...event.state }))),
+      owner.run(() => (event.type === "open" ? open() : setState({ browser: event.state, error: event.error }))),
     )
-    setState({ opened: false, registration })
+    setState({ opened: false, registration, browser: null, error: undefined })
     onCleanup(() => registration.close())
   })
 
@@ -65,15 +59,16 @@ export function createSessionBrowser(session: SessionModel) {
     available,
     opened: () => state.opened,
     state: () => state.browser,
+    error: () => state.error,
     registration: () => (state.opened ? state.registration : undefined),
     close: () => setState("opened", false),
     toggle: () => (state.opened ? setState("opened", false) : open()),
     command(command: BrowserPaneCommand) {
-      setState("browser", { error: undefined })
+      setState("error", undefined)
       const owner = session.ownership.capture()
       void state.registration?.command(command).catch((error: unknown) => {
         if (!owner.current()) return
-        setState("browser", { error: error instanceof Error ? error.message : language.t("common.requestFailed") })
+        setState("error", error instanceof Error ? error.message : language.t("common.requestFailed"))
       })
     },
   }
