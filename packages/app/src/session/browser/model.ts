@@ -37,16 +37,28 @@ export function createSessionBrowser(session: SessionModel) {
 
   createEffect(() => {
     const sessionID = session.identity.sessionID()
-    if (!available() || !sessionID || !platform.browserPane) {
-      setState({ opened: false, registration: undefined, browser: null, error: undefined })
-      return
-    }
+    const pane = platform.browserPane
+    setState({ opened: false, registration: undefined, browser: null, error: undefined })
+    if (!available() || !sessionID || !pane) return
     const owner = session.ownership.capture()
-    const registration = platform.browserPane.register({ sessionID, endpoint: server.conn.http }, (event) =>
-      owner.run(() => (event.type === "open" ? open() : setState({ browser: event.state, error: event.error }))),
-    )
-    setState({ opened: false, registration, browser: null, error: undefined })
-    onCleanup(() => registration.close())
+    const target = { sessionID, endpoint: server.conn.http }
+    let registration: BrowserPaneRegistration | undefined
+    const register = () => {
+      if (registration) return
+      registration = pane.register(target, (event) =>
+        owner.run(() => (event.type === "open" ? open() : setState({ browser: event.state, error: event.error }))),
+      )
+      setState({ registration, browser: null, error: undefined })
+    }
+    // A new session appears in the UI before its server-side creation finishes.
+    const unsubscribe = session.shared.data.on("session.created", (event) => {
+      if (event.data.sessionID === sessionID) register()
+    })
+    if (!session.shared.data.session.creating(sessionID)) register()
+    onCleanup(() => {
+      unsubscribe()
+      registration?.close()
+    })
   })
 
   createEffect(() => {
