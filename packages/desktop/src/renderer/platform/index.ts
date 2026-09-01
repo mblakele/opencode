@@ -41,7 +41,11 @@ export function createDesktopPlatform(
         return {
           setLayout(layout) {
             if (!closed)
-              void ready.then(() => api.browserPane.send({ type: "layout", bindingID, layout })).catch(() => undefined)
+              void ready
+                .then(() =>
+                  api.browserPane.send({ type: "layout", bindingID, ...(layout === undefined ? {} : { layout }) }),
+                )
+                .catch(() => undefined)
           },
           command: (command) => ready.then(() => api.browserPane.request({ type: "command", bindingID, command })),
           close() {

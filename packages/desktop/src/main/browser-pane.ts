@@ -148,7 +148,7 @@ export function createBrowserPane() {
   function publishState(entry: Entry, error?: string) {
     const state = entry.page?.state() ?? null
     send(entry, { type: "browser.control.state", state })
-    publish(entry, { type: "state", state, error })
+    publish(entry, { type: "state", state, ...(error === undefined ? {} : { error }) })
   }
 
   function create(entry: Entry) {
