@@ -64,6 +64,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
     },
     event: overrides.event ?? {
       subscribe: () => Stream.empty,
+      subscribeGlobal: () => Stream.empty,
     },
     experimental: overrides.experimental ?? {
       terminal: {
@@ -107,7 +108,6 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       list: () => Effect.die("unused permission.list"),
       get: () => Effect.die("unused permission.get"),
       reply: () => Effect.die("unused permission.reply"),
-      rules: () => Effect.die("unused permission.rules"),
     },
     plugin: overrides.plugin ?? {
       list: () => Effect.die("unused plugin.list"),
@@ -161,6 +161,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
     },
     session: {
       hook: overrides.session?.hook ?? (() => Effect.die("unused session.hook")),
+      list: overrides.session?.list ?? (() => Effect.die("unused session.list")),
       create: overrides.session?.create ?? (() => Effect.die("unused session.create")),
       get: overrides.session?.get ?? (() => Effect.die("unused session.get")),
       switchAgent: overrides.session?.switchAgent ?? (() => Effect.die("unused session.switchAgent")),
@@ -168,12 +169,24 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       prompt: overrides.session?.prompt ?? (() => Effect.die("unused session.prompt")),
       generate: overrides.session?.generate ?? (() => Effect.die("unused session.generate")),
       command: overrides.session?.command ?? (() => Effect.die("unused session.command")),
-      rename: overrides.session?.rename ?? (() => Effect.die("unused session.rename")),
+      update: overrides.session?.update ?? (() => Effect.die("unused session.update")),
       move: overrides.session?.move ?? (() => Effect.die("unused session.move")),
       synthetic: overrides.session?.synthetic ?? (() => Effect.die("unused session.synthetic")),
       interrupt: overrides.session?.interrupt ?? (() => Effect.die("unused session.interrupt")),
       wait: overrides.session?.wait ?? (() => Effect.die("unused session.wait")),
+      skill: overrides.session?.skill ?? (() => Effect.die("unused session.skill")),
+      compact: overrides.session?.compact ?? (() => Effect.die("unused session.compact")),
+      revert: overrides.session?.revert ?? {
+        stage: () => Effect.die("unused session.revert.stage"),
+        clear: () => Effect.die("unused session.revert.clear"),
+        commit: () => Effect.die("unused session.revert.commit"),
+      },
       context: overrides.session?.context ?? (() => Effect.die("unused session.context")),
+      form: overrides.session?.form ?? {
+        list: () => Effect.die("unused session.form.list"),
+        reply: () => Effect.die("unused session.form.reply"),
+        cancel: () => Effect.die("unused session.form.cancel"),
+      },
     },
   }
 }
