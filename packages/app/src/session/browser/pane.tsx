@@ -1,6 +1,6 @@
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
-import { Spinner } from "@opencode-ai/ui/spinner"
+import { Loader } from "@opencode-ai/ui/loader"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { createEventListener } from "@solid-primitives/event-listener"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
@@ -89,7 +89,7 @@ export function SessionBrowserPane(props: {
           onClick={() => props.browser.command(state()?.loading ? { type: "stop" } : { type: "reload" })}
           icon={
             <Show when={state()?.loading} fallback={<Icon name="reset" size="small" />}>
-              <Spinner class="size-3" />
+              <Loader />
             </Show>
           }
         />

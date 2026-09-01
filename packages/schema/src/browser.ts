@@ -55,6 +55,12 @@ export const Action = Schema.Union([
   }),
   Schema.Struct({ type: Schema.Literal("press"), key: Key }),
   Schema.Struct({
+    type: Schema.Literal("evaluate"),
+    script: Schema.String.check(Schema.isMaxLength(100_000)).annotate({
+      description: "JavaScript to evaluate in the page. The result is JSON-serialized.",
+    }),
+  }),
+  Schema.Struct({
     type: Schema.Literal("scroll"),
     direction: Direction,
     pixels: PositiveInt.check(Schema.isLessThanOrEqualTo(2000)),
@@ -71,6 +77,11 @@ export const Result = Schema.Union([
   Schema.Struct({ type: Schema.Literal("state"), state: State }),
   Schema.Struct({
     type: Schema.Literal("snapshot"),
+    state: State,
+    content: Schema.String.check(Schema.isMaxLength(100_000)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("evaluate"),
     state: State,
     content: Schema.String.check(Schema.isMaxLength(100_000)),
   }),

@@ -42,6 +42,18 @@ export function createBrowserPage(win: BrowserWindow, publish: (error?: string) 
   const update = () => {
     if (!closed) publish()
   }
+  contents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown" || input.alt || !(process.platform === "darwin" ? input.meta : input.control)) return
+    const step =
+      input.key === "=" || input.key === "+" || input.code === "NumpadAdd"
+        ? 0.5
+        : input.key === "-" || input.code === "NumpadSubtract"
+          ? -0.5
+          : 0
+    if (!step && input.key !== "0") return
+    event.preventDefault()
+    contents.setZoomLevel(input.key === "0" ? 0 : contents.getZoomLevel() + step)
+  })
   const session = contents.session
   session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
   session.setPermissionCheckHandler(() => false)
@@ -76,7 +88,6 @@ export function createBrowserPage(win: BrowserWindow, publish: (error?: string) 
     if (!closed) fail()
   })
   view.setVisible(false)
-  view.setBorderRadius(8)
   win.contentView.addChildView(view)
   return {
     view,
@@ -105,6 +116,11 @@ export function createBrowserPage(win: BrowserWindow, publish: (error?: string) 
       if (action.type === "back" && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack()
       if (action.type === "forward" && contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward()
       return { type: "state", state: state() }
+    }
+    if (action.type === "evaluate") {
+      const value: unknown = await contents.executeJavaScript(action.script)
+      check()
+      return { type: "evaluate", state: state(), content: (JSON.stringify(value) ?? "null").slice(0, 100_000) }
     }
     if (action.type === "snapshot") {
       const tree = (await send("Accessibility.getFullAXTree", { depth: 6 })) as { nodes: AXNode[] }
